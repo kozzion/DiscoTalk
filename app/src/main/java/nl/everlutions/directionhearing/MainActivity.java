@@ -6,9 +6,11 @@ import android.content.pm.PackageManager;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioRecord;
+import android.media.AudioTrack;
 import android.media.MediaPlayer;
 import android.media.MediaRecorder;
 import android.os.Bundle;
+import android.os.Process;
 import android.support.annotation.NonNull;
 import android.support.v4.app.ActivityCompat;
 import android.support.v7.app.AppCompatActivity;
@@ -17,6 +19,7 @@ import android.widget.Button;
 import android.widget.Toast;
 
 import java.io.IOException;
+import java.nio.ShortBuffer;
 
 import butterknife.BindView;
 import butterknife.ButterKnife;
@@ -33,27 +36,33 @@ public class MainActivity extends AppCompatActivity {
     private static final String LOG_TAG = "AudioRecordTest";
     private static final int REQUEST_RECORD_AUDIO_PERMISSION = 200;
     private static String mFileName = null;
-    boolean mIsRecording = false ;
-    boolean mStartPlaying =true;
+    boolean mIsRecording = false;
+    boolean mIsPlaying = true;
 
     private MediaRecorder mRecorder = null;
 
 
     private MediaPlayer mPlayer = null;
 
+
+    short[] mOurSamples = new short[SAMPLE_RATE * 120];
+    int mSampleWriteIndex;
+    int mSampleReadIndex;
+
     // Requesting permission to RECORD_AUDIO
     private boolean permissionToRecordAccepted = false;
-    private String [] permissions = {Manifest.permission.RECORD_AUDIO};
+    private String[] permissions = {Manifest.permission.RECORD_AUDIO};
+    private boolean mShouldContinuePlaying;
 
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        switch (requestCode){
+        switch (requestCode) {
             case REQUEST_RECORD_AUDIO_PERMISSION:
-                permissionToRecordAccepted  = grantResults[0] == PackageManager.PERMISSION_GRANTED;
+                permissionToRecordAccepted = grantResults[0] == PackageManager.PERMISSION_GRANTED;
                 break;
         }
-        if (!permissionToRecordAccepted ) {
+        if (!permissionToRecordAccepted) {
             finish();
         }
     }
@@ -114,7 +123,6 @@ public class MainActivity extends AppCompatActivity {
     }
 
 
-
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -122,7 +130,7 @@ public class MainActivity extends AppCompatActivity {
         ButterKnife.bind(this);
         AudioManager audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         String output = audioManager.getProperty("PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED");
-        Toast.makeText(this, "output: "+output, Toast.LENGTH_LONG).show();
+        Toast.makeText(this, "output: " + output, Toast.LENGTH_LONG).show();
 
         //New code
 
@@ -148,54 +156,62 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @OnClick(R.id.button_record)
-    public void onRecordButtonClick()
-    {
+    public void onRecordButtonClick() {
         Log.e(LOG_TAG, String.format("Click: " + mIsRecording));
-      ///*  onRecord(mIsRecording);
-        if (mIsRecording)
-        {
+        ///*  onRecord(mIsRecording);
+        if (mIsRecording) {
             Log.e(LOG_TAG, String.format("Click: stop"));
             recordAudioStop();
             mIsRecording = false;
             mButtonRecord.setText("Start recording");
-        }
-        else
-        {
+        } else {
             Log.e(LOG_TAG, String.format("Click: start"));
             recordAudioStart();
             mIsRecording = true;
             mButtonRecord.setText("Stop recording");
         }
     }
-    @OnClick(R.id.button_play)
-    public void onPlayButtonClick()
-    {
 
-        onPlay(mStartPlaying);
-        if (mStartPlaying) {
+    @OnClick(R.id.button_play)
+    public void onPlayButtonClick() {
+        Log.e(LOG_TAG, String.format("Click: " + mIsPlaying));
+//        onPlay(mIsPlaying);
+
+        if (mIsPlaying) {
+            Log.e(LOG_TAG, String.format("Click: stop playback"));
+            playAudioStop();
             mButtonPlay.setText("Stop playing");
+            mIsPlaying= false;
         } else {
+
+            Log.e(LOG_TAG, String.format("Click: play start"));
+            playAudioStart();
+            mIsPlaying= true;
             mButtonPlay.setText("Start playing");
         }
-        mStartPlaying = !mStartPlaying;
+
+    }
+
+    private void playAudioStop() {
+        mShouldContinuePlaying = false;
     }
 
     boolean mShouldContinue; // Indicates if recording / playback should stop
 
-    void recordAudioStop()
-    {
+    void recordAudioStop() {
         mShouldContinue = false;
     }
 
-    void recordAudioStart()
-    {
-        if (!mShouldContinue)
-        {
+
+    void recordAudioStart() {
+        if (!mShouldContinue) {
+
             mShouldContinue = true;
+            mSampleWriteIndex = 0;
             new Thread(new Runnable() {
                 @Override
                 public void run() {
-                    android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO);
+                    Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
 
                     // buffer size in bytes
                     int bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE,
@@ -222,25 +238,83 @@ public class MainActivity extends AppCompatActivity {
 
                     Log.e(LOG_TAG, "Start recording");
 
-                    long shortsRead = 0;
-
                     while (mShouldContinue) {
-                        Log.e(LOG_TAG, "Recording: " + audioBuffer.length);
                         int numberOfShort = record.read(audioBuffer, 0, audioBuffer.length);
-                        Log.e(LOG_TAG, "Recorded: " + audioBuffer.length);
-                        shortsRead += numberOfShort;
 
+                        System.arraycopy(audioBuffer, 0, mOurSamples, mSampleWriteIndex, numberOfShort);
+                        mSampleWriteIndex += numberOfShort;
                         // Do something with the audioBuffer
                     }
 
                     record.stop();
                     record.release();
 
-                    Log.e(LOG_TAG, String.format("Recording stopped. Samples read: %d", shortsRead));
+                    Log.e(LOG_TAG, String.format("Recording stopped. Samples read: %d", mSampleWriteIndex));
+
                 }
             }).start();
         }
     }
 
+    ShortBuffer mSamples; // the samples to play
+    int mNumSamples; // number of samples to play
+
+    void playAudioStart() {
+        if(!mShouldContinuePlaying) {
+            mShouldContinuePlaying = true;
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    mSamples = ShortBuffer.wrap(mOurSamples);
+                    mNumSamples = mSampleWriteIndex;
+                    int bufferSize = AudioTrack.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO,
+                            AudioFormat.ENCODING_PCM_16BIT);
+                    if (bufferSize == AudioTrack.ERROR || bufferSize == AudioTrack.ERROR_BAD_VALUE) {
+                        bufferSize = SAMPLE_RATE * 2;
+                    }
+
+                    AudioTrack audioTrack = new AudioTrack(
+                            AudioManager.STREAM_MUSIC,
+                            SAMPLE_RATE,
+                            AudioFormat.CHANNEL_OUT_MONO,
+                            AudioFormat.ENCODING_PCM_16BIT,
+                            bufferSize,
+                            AudioTrack.MODE_STREAM);
+
+                    audioTrack.play();
+
+                    Log.e(LOG_TAG, "Audio streaming started");
+
+                    short[] buffer = new short[bufferSize];
+                    mSamples.rewind();
+                    int limit = mNumSamples;
+                    int totalWritten = 0;
+                    while (mSamples.position() < limit && mShouldContinuePlaying) {
+                        int numSamplesLeft = limit - mSamples.position();
+                        int samplesToWrite;
+                        if (numSamplesLeft >= buffer.length) {
+                            mSamples.get(buffer);
+                            samplesToWrite = buffer.length;
+                        } else {
+                            for (int i = numSamplesLeft; i < buffer.length; i++) {
+                                buffer[i] = 0;
+                            }
+                            mSamples.get(buffer, 0, numSamplesLeft);
+                            samplesToWrite = numSamplesLeft;
+                        }
+                        totalWritten += samplesToWrite;
+                        audioTrack.write(buffer, 0, samplesToWrite);
+                    }
+
+                    if (!mShouldContinuePlaying) {
+                        audioTrack.release();
+                    }
+
+                    Log.v(LOG_TAG, "Audio streaming finished. Samples written: " + totalWritten);
+                }
+
+            }).start();
+        }
+    }
 
 }
